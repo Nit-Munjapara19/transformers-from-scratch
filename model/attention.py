@@ -1,53 +1,53 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-def scaled_dot_product_attention(query,key,value,mask=None):
-    key_dimension = query.size(-1)
-    attention_scores = torch.matmul(query,key.transpose(-2,-1))
-    attention_scores = attention_scores/math.sqrt(key_dimension)
+def scaled_dot_product_attention(query, key, value, mask=None):
+    d_k = query.size(-1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
 
     if mask is not None:
-        attention_scores = attention_scores.masked_fill(mask==0,float('-inf'))
+        scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
 
-    attention_weights = F.softmax(attention_scores,dim=-1)
-    attention_output = torch.matmul(attention_weights,value)
-
+    attention_weights = torch.softmax(scores, dim=-1)
+    attention_output = torch.matmul(attention_weights, value)
     return attention_output, attention_weights
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self,d_model,num_heads,dropout):
+    def __init__(self, d_model, num_heads, dropout):
         super().__init__()
-
-        if d_model%num_heads != 0:
-            raise ValueError("d_model must be divisible by num_heads.")
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
 
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dimension = d_model // num_heads
-
-        self.query_projection = nn.Linear(d_model,d_model)
-        self.key_projection = nn.Linear(d_model,d_model)
-        self.value_projection = nn.Linear(d_model,d_model)
-        self.output_projection = nn.Linear(d_model,d_model)
+        self.query_projection = nn.Linear(d_model, d_model)
+        self.key_projection = nn.Linear(d_model, d_model)
+        self.value_projection = nn.Linear(d_model, d_model)
+        self.output_projection = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
-        def forward(self,query,key,value,mask=None):
-            batch_size = query.size(0)
-            query = self.query_projection(query)
-            key = self.key_projection(key)
-            value = self.value_projection(value)
+    def split_into_heads(self, x):
+        batch_size, sequence_length, _ = x.shape
+        x = x.view(batch_size, sequence_length, self.num_heads, self.head_dimension)
+        return x.transpose(1, 2)
 
-            query = query.view(batch_size,-1,self.num_heads,self.head_dimension).transpose(1, 2)
-            #view --> changes: [batch,sequence,256] into [batch,sequence,8,32]
-            key = key.view(batch_size,-1,self.num_heads,self.head_dimension).transpose(1, 2)
-            value = value.view(batch_size,-1,self.num_heads,self.head_dimension).transpose(1, 2)
-    
-            attention_output, attention_weights = (scaled_dot_product_attention(query,key,value,mask))
-            attention_output = attention_output.transpose(1,2)
-            attention_output = attention_output.contiguous().view(batch_size,-1,self.d_model)
-            attention_output = self.output_projection(attention_output)
-            attention_output = self.dropout(attention_output)
-    
-            return attention_output, attention_weights
+    def combine_heads(self, x):
+        batch_size = x.size(0)
+        sequence_length = x.size(2)
+        x = x.transpose(1, 2).contiguous()
+        return x.view(batch_size, sequence_length, self.d_model)
+
+    def forward(self, query, key, value, mask=None):
+        query = self.query_projection(query)
+        key = self.key_projection(key)
+        value = self.value_projection(value)
+        query = self.split_into_heads(query)
+        key = self.split_into_heads(key)
+        value = self.split_into_heads(value)
+        attention_output, attention_weights = scaled_dot_product_attention(query=query, key=key, value=value, mask=mask)
+        attention_output = self.combine_heads(attention_output)
+        attention_output = self.output_projection(attention_output)
+        attention_output = self.dropout(attention_output)
+        return attention_output, attention_weights
